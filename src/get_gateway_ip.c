@@ -29,18 +29,35 @@ struct route_info{
 	char ifName[IF_NAMESIZE];
 };
 
-int readNlSock(int sockFd, char *bufPtr, unsigned int seqNum, unsigned int pId){
+int readNlSock(int sockFd, char **bufPtr, size_t *bufSize,
+		unsigned int seqNum, unsigned int pId){
 	struct nlmsghdr *nlHdr;
 	int readLen = 0, msgLen = 0;
+	char *buffer = *bufPtr;
 
 	do{
+		/* Keep one BUFSIZE chunk free so each recv() can append the next netlink block. */
+		while((*bufSize - msgLen) < BUFSIZE) {
+			size_t newSize = *bufSize + BUFSIZE;
+			char *newBuffer = (char *)realloc(buffer, newSize);
+
+			if(newBuffer == NULL) {
+				perror("realloc");
+				return -1;
+			}
+
+			buffer = newBuffer;
+			*bufPtr = newBuffer;
+			*bufSize = newSize;
+		}
+
 		/* Recieve response from the kernel */
-		if((readLen = recv(sockFd, bufPtr, BUFSIZE - msgLen, 0)) < 0){
+		if((readLen = recv(sockFd, buffer + msgLen, *bufSize - msgLen, 0)) < 0){
 			perror("SOCK READ: ");
 			return -1;
 		}
 
-		nlHdr = (struct nlmsghdr *)bufPtr;
+		nlHdr = (struct nlmsghdr *)(buffer + msgLen);
 
 		/* Check if the header is valid */
 		if((NLMSG_OK(nlHdr, readLen) == 0) || (nlHdr->nlmsg_type == NLMSG_ERROR))
@@ -54,8 +71,6 @@ int readNlSock(int sockFd, char *bufPtr, unsigned int seqNum, unsigned int pId){
 			break;
 		}
 		else{
-			/* Else move the pointer to buffer appropriately */
-			bufPtr += readLen;
 			msgLen += readLen;
 		}
 
@@ -121,7 +136,8 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 {
 	struct nlmsghdr *nlMsg;
 	struct route_info *rtInfo;
-	char msgBuf[BUFSIZE];
+	char *msgBuf;
+	size_t msgBufSize = BUFSIZE;
 
 	int sock, len = 0;
 	unsigned int msgSeq = 0;
@@ -130,8 +146,15 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 	if((sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_ROUTE)) < 0)
 		perror("Socket Creation: ");
 
+	msgBuf = (char *)malloc(msgBufSize);
+	if(msgBuf == NULL) {
+		perror("malloc");
+		close(sock);
+		return -1;
+	}
+
 	/* Initialize the buffer */
-	memset(msgBuf, 0, BUFSIZE);
+	memset(msgBuf, 0, msgBufSize);
 
 	/* point the header and the msg structure pointers into the buffer */
 	nlMsg = (struct nlmsghdr *)msgBuf;
@@ -147,14 +170,20 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 	/* Send the request */
 	if(send(sock, nlMsg, nlMsg->nlmsg_len, 0) < 0){
 		printf("Write To Socket Failed...\n");
+		free(msgBuf);
+		close(sock);
 		return -1;
 	}
 
 	/* Read the response */
-	if((len = readNlSock(sock, msgBuf, msgSeq, getpid())) < 0) {
+	if((len = readNlSock(sock, &msgBuf, &msgBufSize, msgSeq, getpid())) < 0) {
 		printf("Read From Socket Failed...\n");
+		free(msgBuf);
+		close(sock);
 		return -1;
 	}
+
+	nlMsg = (struct nlmsghdr *)msgBuf;
 
 	/* Parse and print the response */
 	rtInfo = (struct route_info *)malloc(sizeof(struct route_info));
@@ -165,6 +194,7 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 		parseRoutes(nlMsg, rtInfo, gateway_ip, net_interface);
 	}
 	free(rtInfo);
+	free(msgBuf);
 	close(sock);
 
 	return 0;
