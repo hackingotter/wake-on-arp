@@ -29,10 +29,11 @@ struct route_info{
 	char ifName[IF_NAMESIZE];
 };
 
-int readNlSock(int sockFd, char **bufPtr, size_t *bufSize,
+ssize_t readNlSock(int sockFd, char **bufPtr, size_t *bufSize,
 		unsigned int seqNum, unsigned int pId){
 	struct nlmsghdr *nlHdr;
-	int readLen = 0, msgLen = 0;
+	ssize_t readLen = 0;
+	size_t msgLen = 0;
 	char *buffer = *bufPtr;
 
 	do{
@@ -71,7 +72,7 @@ int readNlSock(int sockFd, char **bufPtr, size_t *bufSize,
 			break;
 		}
 		else{
-			msgLen += readLen;
+			msgLen += (size_t)readLen;
 		}
 
 		/* Check if its a multi part message */
@@ -138,8 +139,10 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 	struct route_info *rtInfo;
 	char *msgBuf;
 	size_t msgBufSize = BUFSIZE;
+	size_t len = 0;
+	ssize_t readLen;
 
-	int sock, len = 0;
+	int sock;
 	unsigned int msgSeq = 0;
 
 	/* Create Socket */
@@ -149,7 +152,8 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 	msgBuf = (char *)malloc(msgBufSize);
 	if(msgBuf == NULL) {
 		perror("malloc");
-		close(sock);
+		if(sock >= 0)
+			close(sock);
 		return -1;
 	}
 
@@ -176,12 +180,13 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 	}
 
 	/* Read the response */
-	if((len = readNlSock(sock, &msgBuf, &msgBufSize, msgSeq, getpid())) < 0) {
+	if((readLen = readNlSock(sock, &msgBuf, &msgBufSize, msgSeq, getpid())) < 0) {
 		printf("Read From Socket Failed...\n");
 		free(msgBuf);
 		close(sock);
 		return -1;
 	}
+	len = (size_t)readLen;
 
 	nlMsg = (struct nlmsghdr *)msgBuf;
 
@@ -199,4 +204,3 @@ int get_gateway_ip(unsigned char *gateway_ip, char *net_interface)
 
 	return 0;
 }
-
